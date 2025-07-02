@@ -24,6 +24,7 @@ import {
   type AddToExistingForm,
 } from "@/lib/validations";
 import { useSearchParams } from 'next/navigation';
+import Image from 'next/image';
 
 interface GroupedByFrom {
   from: string
@@ -463,6 +464,7 @@ export default function EmailRedirectionsAdmin() {
 
         {/* Header */}
         <header className="bg-white border border-gray-200 rounded-lg p-6">
+          <Image alt='logo' src="/icon.svg" width={50} height={50}/>
           <h1 ref={mainHeadingRef} className="text-2xl font-semibold text-gray-900">
             Administration des Redirections Email
           </h1>
