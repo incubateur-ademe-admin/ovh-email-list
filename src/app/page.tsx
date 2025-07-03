@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Plus, X, Loader2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { Logo } from "@/components/logo";
 import { useToast } from "@/hooks/use-toast";
 import type { Redirection } from "@/types/api";
 import {
@@ -23,8 +24,7 @@ import {
   type CreateRedirectionForm,
   type AddToExistingForm,
 } from "@/lib/validations";
-import { useSearchParams } from 'next/navigation';
-import Image from 'next/image';
+import { useSearchParams } from "next/navigation";
 
 interface GroupedByFrom {
   from: string
@@ -36,10 +36,7 @@ interface DomainGroup {
   fromGroups: GroupedByFrom[]
 }
 
-function mergeOptimisticWithServer(
-  optimistic: DomainGroup[],
-  server: DomainGroup[]
-): DomainGroup[] {
+function mergeOptimisticWithServer(optimistic: DomainGroup[], server: DomainGroup[]): DomainGroup[] {
   const tempRedirections = new Map<string, Redirection>();
 
   // Collect all temp redirections
@@ -59,7 +56,7 @@ function mergeOptimisticWithServer(
       const mergedRedirections = [...fg.redirections];
 
       for (const redir of tempRedirections.values()) {
-        const existingPairs = new Set(fg.redirections.map(r => `${r.from}->${r.to}`));
+        const existingPairs = new Set(fg.redirections.map((r) => `${r.from}->${r.to}`));
 
         if (!existingPairs.has(`${redir.from}->${redir.to}`)) {
           mergedRedirections.push(redir);
@@ -88,7 +85,7 @@ export default function EmailRedirectionsAdmin() {
   const { toast } = useToast();
 
   const searchParams = useSearchParams();
-  const initialDomain = searchParams.get('domain') || '';
+  const initialDomain = searchParams.get("domain") || "";
 
   // Add to existing "from" form state
   const [addingToFrom, setAddingToFrom] = useState<string | null>(null);
@@ -131,7 +128,6 @@ export default function EmailRedirectionsAdmin() {
 
   const loadData = async () => {
     console.log("loadData called");
-    // setLoading(true);
     announceToScreenReader("Chargement des domaines et redirections en cours...");
 
     try {
@@ -176,7 +172,6 @@ export default function EmailRedirectionsAdmin() {
       });
 
       const fetchedDomainGroups = await Promise.all(domainGroupsPromises);
-      // setDomainGroups(fetchedDomainGroups);
       setDomainGroups((previousOptimisticGroups) => {
         return mergeOptimisticWithServer(previousOptimisticGroups, fetchedDomainGroups);
       });
@@ -222,14 +217,10 @@ export default function EmailRedirectionsAdmin() {
         const fromGroupIndex = updated[domainGroupIndex].fromGroups.findIndex((fg) => fg.from === data.from);
 
         if (fromGroupIndex >= 0) {
-          // Add to existing from group
-          // updated[domainGroupIndex].fromGroups[fromGroupIndex].redirections.push(...optimisticRedirections);
-          const existingTo = new Set(
-            updated[domainGroupIndex].fromGroups[fromGroupIndex].redirections.map((r) => r.to)
-          );
-          
+          const existingTo = new Set(updated[domainGroupIndex].fromGroups[fromGroupIndex].redirections.map((r) => r.to));
+
           const uniqueRedirs = optimisticRedirections.filter((r) => !existingTo.has(r.to));
-          updated[domainGroupIndex].fromGroups[fromGroupIndex].redirections.push(...uniqueRedirs);          
+          updated[domainGroupIndex].fromGroups[fromGroupIndex].redirections.push(...uniqueRedirs);
         } else {
           // Create new from group
           updated[domainGroupIndex].fromGroups.push({
@@ -273,7 +264,6 @@ export default function EmailRedirectionsAdmin() {
           description: successMessage,
         });
         announceToScreenReader(successMessage);
-
       } catch (error) {
         console.error("Failed to create redirections:", error);
         const errorMessage = "Échec de la création des redirections";
@@ -311,14 +301,10 @@ export default function EmailRedirectionsAdmin() {
         const fromGroupIndex = updated[domainGroupIndex].fromGroups.findIndex((fg) => fg.from === fromEmail);
 
         if (fromGroupIndex >= 0) {
-          // updated[domainGroupIndex].fromGroups[fromGroupIndex].redirections.push(...optimisticRedirections);
-          const existingTo = new Set(
-            updated[domainGroupIndex].fromGroups[fromGroupIndex].redirections.map((r) => r.to)
-          );
-          
+          const existingTo = new Set(updated[domainGroupIndex].fromGroups[fromGroupIndex].redirections.map((r) => r.to));
+
           const uniqueRedirs = optimisticRedirections.filter((r) => !existingTo.has(r.to));
           updated[domainGroupIndex].fromGroups[fromGroupIndex].redirections.push(...uniqueRedirs);
-          
         }
       }
 
@@ -351,7 +337,6 @@ export default function EmailRedirectionsAdmin() {
           description: successMessage,
         });
         announceToScreenReader(successMessage);
-
       } catch (error) {
         console.error("Failed to add redirections:", error);
         const errorMessage = "Échec de l'ajout des redirections";
@@ -428,12 +413,11 @@ export default function EmailRedirectionsAdmin() {
   useEffect(() => {
     if (didMount.current) return;
     didMount.current = true;
-    setLoading(true);  // uniquement ici
+    setLoading(true); // uniquement ici
     loadData().finally(() => {
       setLoading(false); // uniquement ici aussi
     });
   }, []);
-  
 
   if (loading) {
     return (
@@ -464,10 +448,7 @@ export default function EmailRedirectionsAdmin() {
 
         {/* Header */}
         <header className="bg-white border border-gray-200 rounded-lg p-6">
-          <Image alt='logo' src="/icon.svg" width={50} height={50}/>
-          <h1 ref={mainHeadingRef} className="text-2xl font-semibold text-gray-900">
-            Administration des Redirections Email
-          </h1>
+          <Logo ref={mainHeadingRef} size="lg" className="mb-4" />
           <p className="text-gray-600 mt-1">Gérer les règles de redirection email par domaine</p>
           {isPending && (
             <div className="flex items-center gap-2 mt-2 text-sm text-blue-600" role="status" aria-live="polite">
@@ -568,7 +549,7 @@ export default function EmailRedirectionsAdmin() {
           </section>
 
           {/* Domain Groups */}
-          <section aria-labelledby="domains-heading" className='mt-8'>
+          <section aria-labelledby="domains-heading" className="mt-8">
             <h2 id="domains-heading" className="sr-only">
               Redirections par domaine
             </h2>

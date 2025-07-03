@@ -3,7 +3,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 import { Inter } from "next/font/google";
 import { Toaster } from "sonner";
-import { Suspense } from 'react';
+import { Suspense } from "react";
 
 const inter = Inter({ subsets: ["latin"] });
 
@@ -11,6 +11,11 @@ export const metadata: Metadata = {
   title: "Administration des Redirections Email",
   description: "Gérer les règles de redirection email par domaine",
   generator: "v0.dev",
+  icons: {
+    icon: "/icon.svg",
+    shortcut: "/icon.svg",
+    apple: "/icon.svg",
+  },
 };
 
 export default function RootLayout({
@@ -21,9 +26,7 @@ export default function RootLayout({
   return (
     <html lang="fr">
       <body className={inter.className}>
-        <Suspense>
-          {children}
-        </Suspense>
+        <Suspense>{children}</Suspense>
         <Toaster
           position="top-right"
           richColors

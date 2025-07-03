@@ -8,6 +8,8 @@ import type {
   DomainRedirectionsResponse,
 } from "@/types/api";
 import { isOvhError, ovhClient } from './ovh';
+import { cookies } from 'next/headers';
+import { APP_DOMAIN, COOKIE_MAX_AGE, COOKIE_NAME, IS_PRODUCTION } from './config';
 
 /**
  * Fetch all available domains
@@ -136,6 +138,40 @@ export async function deleteRedirectionAction(request: DeleteRedirectionRequest)
     return {
       success: false,
       error: "Failed to delete redirection",
+    };
+  }
+}
+
+export async function login(password: string): Promise<ApiResponse<void>> {
+  if (!password) {
+    return {
+      success: false,
+      error: "Password is required",
+    };
+  }
+
+  console.log("password", password, process.env.BASIC_AUTH_PASS);
+
+  // Simulate authentication logic
+  if (password === process.env.BASIC_AUTH_PASS) {
+    const _cookies = await cookies();
+    _cookies.set({
+      name: COOKIE_NAME,
+      value: '1',
+      maxAge: COOKIE_MAX_AGE,
+      httpOnly: true,
+      secure: IS_PRODUCTION,
+      path: '/',
+      sameSite: 'lax',
+      domain: IS_PRODUCTION ? APP_DOMAIN : undefined, // Remplacez par votre domaine de production
+    });
+    return {
+      success: true,
+    };
+  } else {
+    return {
+      success: false,
+      error: "Invalid password",
     };
   }
 }
