@@ -25,6 +25,7 @@ import {
   type AddToExistingForm,
 } from "@/lib/validations";
 import { useSearchParams } from "next/navigation";
+import Link from 'next/link';
 
 interface GroupedByFrom {
   from: string
@@ -417,6 +418,7 @@ export default function EmailRedirectionsAdmin() {
     loadData().finally(() => {
       setLoading(false); // uniquement ici aussi
     });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   if (loading) {
@@ -559,7 +561,7 @@ export default function EmailRedirectionsAdmin() {
                   <Card className="border-gray-200 shadow-none bg-white">
                     <CardHeader className="bg-blue-50 border-b border-gray-200">
                       <CardTitle id={`domain-${domainIndex}-heading`} className="text-xl text-blue-900">
-                        {domainGroup.domain}
+                        <Link href={`?domain=${domainGroup.domain}`}>{domainGroup.domain}</Link>
                       </CardTitle>
                       <CardDescription>
                         {domainGroup.fromGroups.length} email{domainGroup.fromGroups.length !== 1 ? "s" : ""} source
