@@ -10,3 +10,4 @@ export const IS_PRODUCTION = process.env.NODE_ENV === "production";
 // Cookie settings
 export const COOKIE_NAME = 'email-lists-basic-auth';
 export const COOKIE_MAX_AGE = 5 * 60; // 5 minutes en secondes
+export const COOKIE_SECRET = process.env.COOKIE_SECRET || "";

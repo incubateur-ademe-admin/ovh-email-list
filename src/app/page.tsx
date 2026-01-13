@@ -1,14 +1,14 @@
 "use client";
 
 import { useState, useEffect, useTransition, useRef } from "react";
+// `cn` not needed in this file after refactor
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Plus, X, Loader2 } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
+import DomainCard from "@/components/DomainCard";
 import { Logo } from "@/components/logo";
 import { useToast } from "@/hooks/use-toast";
 import type { Redirection } from "@/types/api";
@@ -25,7 +25,7 @@ import {
   type AddToExistingForm,
 } from "@/lib/validations";
 import { useSearchParams } from "next/navigation";
-import Link from 'next/link';
+import { Plus, Loader2 } from "lucide-react";
 
 interface GroupedByFrom {
   from: string
@@ -35,6 +35,7 @@ interface GroupedByFrom {
 interface DomainGroup {
   domain: string
   fromGroups: GroupedByFrom[]
+  loading?: boolean
 }
 
 function mergeOptimisticWithServer(optimistic: DomainGroup[], server: DomainGroup[]): DomainGroup[] {
@@ -87,6 +88,12 @@ export default function EmailRedirectionsAdmin() {
 
   const searchParams = useSearchParams();
   const initialDomain = searchParams.get("domain") || "";
+
+  // animation removed for domain list — handled intentionally via simple DOM updates
+
+  // Derived progress counters
+  const totalDomains = domainGroups.length;
+  const loadedDomains = domainGroups.filter((d) => !d.loading).length;
 
   // Add to existing "from" form state
   const [addingToFrom, setAddingToFrom] = useState<string | null>(null);
@@ -147,13 +154,50 @@ export default function EmailRedirectionsAdmin() {
 
       const fetchedDomains = domainsResponse.data;
 
-      // Fetch redirections for each domain
-      const domainGroupsPromises = fetchedDomains.map(async (domain) => {
+      // Ensure alphabetical order from the start. Build a domainGroups array in sorted order.
+      const sortedDomains = [...fetchedDomains].sort((a, b) => a.localeCompare(b));
+      setDomainGroups((prev) => {
+        return sortedDomains.map((d) => {
+          const existing = prev.find((p) => p.domain === d);
+          if (existing) return { ...existing, loading: true };
+          return { domain: d, fromGroups: [], loading: true };
+        });
+      });
+
+      // Stop global loading so UI renders and domains can arrive progressively
+      setLoading(false);
+
+      // Helper to run async map with concurrency limit
+      async function mapWithConcurrency<T, U>(items: T[], limit: number, fn: (item: T, idx: number) => Promise<U>) {
+        const results: U[] = new Array(items.length);
+        let i = 0;
+        const workers = new Array(Math.min(limit, items.length)).fill(null).map(async () => {
+          while (i < items.length) {
+            const idx = i++;
+            try {
+              results[idx] = await fn(items[idx], idx);
+            } catch (e) {
+              results[idx] = e as unknown as U;
+            }
+          }
+        });
+        await Promise.all(workers);
+        return results;
+      }
+
+      // Fetch redirections per domain with limited concurrency and update UI as each completes
+      const concurrencyLimit = 5;
+
+      await mapWithConcurrency(sortedDomains, concurrencyLimit, async (domain) => {
         const redirectionsResponse = await fetchRedirectionsByDomainAction(domain);
 
         if (!redirectionsResponse.success || !redirectionsResponse.data) {
           console.error(`Failed to load redirections for ${domain}:`, redirectionsResponse.error);
-          return { domain, fromGroups: [] };
+          // mark domain as loaded but empty
+          setDomainGroups((prev) =>
+            prev.map((dg) => (dg.domain === domain ? { ...dg, fromGroups: [], loading: false } : dg)),
+          );
+          return;
         }
 
         const redirections = redirectionsResponse.data.redirections;
@@ -169,21 +213,17 @@ export default function EmailRedirectionsAdmin() {
           return acc;
         }, []);
 
-        return { domain, fromGroups };
+        const fetchedGroup: DomainGroup = { domain, fromGroups };
+
+        // Merge temp redirections from optimistic UI into this domain and replace placeholder
+        setDomainGroups((prev) => {
+          const merged = mergeOptimisticWithServer(prev, [fetchedGroup]);
+          const mergedDomain = merged[0];
+          return prev.map((dg) => (dg.domain === domain ? { ...mergedDomain, loading: false } : dg));
+        });
       });
 
-      const fetchedDomainGroups = await Promise.all(domainGroupsPromises);
-      setDomainGroups((previousOptimisticGroups) => {
-        return mergeOptimisticWithServer(previousOptimisticGroups, fetchedDomainGroups);
-      });
-
-      const totalRedirections = fetchedDomainGroups.reduce(
-        (total, dg) => total + dg.fromGroups.reduce((sum, fg) => sum + fg.redirections.length, 0),
-        0,
-      );
-      announceToScreenReader(
-        `Chargement terminé. ${fetchedDomains.length} domaines et ${totalRedirections} redirections chargés.`,
-      );
+      announceToScreenReader(`Chargement terminé. ${fetchedDomains.length} domaines chargés.`);
     } catch (error) {
       console.error("Failed to load data:", error);
       const errorMessage = "Échec du chargement des données";
@@ -209,38 +249,37 @@ export default function EmailRedirectionsAdmin() {
 
     const domain = data.from.split("@")[1];
 
-    // Update UI optimistically
+    // Update UI optimistically (immutable updates)
     setDomainGroups((prev) => {
-      const updated = [...prev];
-      const domainGroupIndex = updated.findIndex((dg) => dg.domain === domain);
+      const domainExists = prev.some((dg) => dg.domain === domain);
 
-      if (domainGroupIndex >= 0) {
-        const fromGroupIndex = updated[domainGroupIndex].fromGroups.findIndex((fg) => fg.from === data.from);
-
-        if (fromGroupIndex >= 0) {
-          const existingTo = new Set(updated[domainGroupIndex].fromGroups[fromGroupIndex].redirections.map((r) => r.to));
-
-          const uniqueRedirs = optimisticRedirections.filter((r) => !existingTo.has(r.to));
-          updated[domainGroupIndex].fromGroups[fromGroupIndex].redirections.push(...uniqueRedirs);
-        } else {
-          // Create new from group
-          updated[domainGroupIndex].fromGroups.push({
-            from: data.from,
-            redirections: optimisticRedirections,
-          });
-        }
-      } else {
-        // Create new domain group
-        updated.push({
-          domain,
-          fromGroups: [{ from: data.from, redirections: optimisticRedirections }],
-        });
+      if (!domainExists) {
+        return [
+          ...prev,
+          { domain, fromGroups: [{ from: data.from, redirections: optimisticRedirections }], loading: false },
+        ];
       }
 
-      return updated;
-    });
+      return prev.map((dg) => {
+        if (dg.domain !== domain) return dg;
 
-    // Clear form immediately for better UX
+        const fromGroup = dg.fromGroups.find((fg) => fg.from === data.from);
+
+        if (!fromGroup) {
+          return { ...dg, fromGroups: [...dg.fromGroups, { from: data.from, redirections: optimisticRedirections }] };
+        }
+
+        const existingTo = new Set(fromGroup.redirections.map((r) => r.to));
+        const unique = optimisticRedirections.filter((r) => !existingTo.has(r.to));
+
+        return {
+          ...dg,
+          fromGroups: dg.fromGroups.map((fg) =>
+            fg.from === data.from ? { ...fg, redirections: [...fg.redirections, ...unique] } : fg,
+          ),
+        };
+      });
+    });
     mainForm.reset();
     announceToScreenReader(`Création de ${toEmails.length} redirection${toEmails.length !== 1 ? "s" : ""} en cours...`);
 
@@ -248,22 +287,35 @@ export default function EmailRedirectionsAdmin() {
       try {
         const response = await createRedirectionsAction({ from: data.from, toEmails });
 
-        if (!response.success) {
+        if (!response.success || !response.data) {
           const errorMessage = response.error || "Échec de la création des redirections";
-          toast({
-            title: "Erreur",
-            description: errorMessage,
-            variant: "destructive",
-          });
+          toast({ title: "Erreur", description: errorMessage, variant: "destructive" });
           announceToScreenReader(`Erreur : ${errorMessage}`);
           return;
         }
 
+        // Replace temp IDs with server IDs immutably
+        const created = response.data;
+        setDomainGroups((prev) =>
+          prev.map((dg) => {
+            if (dg.domain !== domain) return dg;
+
+            return {
+              ...dg,
+              fromGroups: dg.fromGroups.map((fg) => ({
+                ...fg,
+                redirections: fg.redirections.map((r) => {
+                  if (!r.id.startsWith("temp-")) return r;
+                  const match = created.find((c) => c.from === r.from && c.to === r.to);
+                  return match ? match : r;
+                }),
+              })),
+            };
+          }),
+        );
+
         const successMessage = `${toEmails.length} redirection${toEmails.length !== 1 ? "s créées" : " créée"} avec succès`;
-        toast({
-          title: "Succès",
-          description: successMessage,
-        });
+        toast({ title: "Succès", description: successMessage });
         announceToScreenReader(successMessage);
       } catch (error) {
         console.error("Failed to create redirections:", error);
@@ -275,8 +327,7 @@ export default function EmailRedirectionsAdmin() {
         });
         announceToScreenReader(`Erreur : ${errorMessage}`);
       } finally {
-        // Reload data to get real IDs from server
-        loadData();
+        // no full reload here: we already reconciled temp IDs with server IDs above
       }
     });
   };
@@ -293,24 +344,21 @@ export default function EmailRedirectionsAdmin() {
 
     const domain = fromEmail.split("@")[1];
 
-    // Update UI optimistically
-    setDomainGroups((prev) => {
-      const updated = [...prev];
-      const domainGroupIndex = updated.findIndex((dg) => dg.domain === domain);
-
-      if (domainGroupIndex >= 0) {
-        const fromGroupIndex = updated[domainGroupIndex].fromGroups.findIndex((fg) => fg.from === fromEmail);
-
-        if (fromGroupIndex >= 0) {
-          const existingTo = new Set(updated[domainGroupIndex].fromGroups[fromGroupIndex].redirections.map((r) => r.to));
-
-          const uniqueRedirs = optimisticRedirections.filter((r) => !existingTo.has(r.to));
-          updated[domainGroupIndex].fromGroups[fromGroupIndex].redirections.push(...uniqueRedirs);
-        }
-      }
-
-      return updated;
-    });
+    // Update UI optimistically (immutable)
+    setDomainGroups((prev) =>
+      prev.map((dg) => {
+        if (dg.domain !== domain) return dg;
+        return {
+          ...dg,
+          fromGroups: dg.fromGroups.map((fg) => {
+            if (fg.from !== fromEmail) return fg;
+            const existingTo = new Set(fg.redirections.map((r) => r.to));
+            const unique = optimisticRedirections.filter((r) => !existingTo.has(r.to));
+            return { ...fg, redirections: [...fg.redirections, ...unique] };
+          }),
+        };
+      }),
+    );
 
     // Clear form and hide it
     setAddingToFrom(null);
@@ -321,22 +369,34 @@ export default function EmailRedirectionsAdmin() {
       try {
         const response = await createRedirectionsAction({ from: fromEmail, toEmails });
 
-        if (!response.success) {
+        if (!response.success || !response.data) {
           const errorMessage = response.error || "Échec de l'ajout des redirections";
-          toast({
-            title: "Erreur",
-            description: errorMessage,
-            variant: "destructive",
-          });
+          toast({ title: "Erreur", description: errorMessage, variant: "destructive" });
           announceToScreenReader(`Erreur : ${errorMessage}`);
           return;
         }
 
+        // Replace temp IDs with server IDs for added destinations
+        const created = response.data;
+        setDomainGroups((prev) =>
+          prev.map((dg) => {
+            if (dg.domain !== domain) return dg;
+            return {
+              ...dg,
+              fromGroups: dg.fromGroups.map((fg) => ({
+                ...fg,
+                redirections: fg.redirections.map((r) => {
+                  if (!r.id.startsWith("temp-")) return r;
+                  const match = created.find((c) => c.from === r.from && c.to === r.to);
+                  return match ? match : r;
+                }),
+              })),
+            };
+          }),
+        );
+
         const successMessage = `${toEmails.length} destination${toEmails.length !== 1 ? "s ajoutées" : " ajoutée"} avec succès`;
-        toast({
-          title: "Succès",
-          description: successMessage,
-        });
+        toast({ title: "Succès", description: successMessage });
         announceToScreenReader(successMessage);
       } catch (error) {
         console.error("Failed to add redirections:", error);
@@ -348,8 +408,7 @@ export default function EmailRedirectionsAdmin() {
         });
         announceToScreenReader(`Erreur : ${errorMessage}`);
       } finally {
-        // Reload data to get real IDs from server
-        loadData();
+        // no full reload here: reconciliation already applied above
       }
     });
   };
@@ -403,23 +462,35 @@ export default function EmailRedirectionsAdmin() {
         });
         announceToScreenReader(`Erreur : ${errorMessage}`);
       } finally {
-        // Reload data to get real IDs from server
-        loadData();
+        // Do not reload all cards. If deletion failed server-side we attempted to show an error above.
+        // Optionally, we could re-fetch only the affected domain to reconcile; skip global reload here.
       }
     });
   };
 
-  const didMount = useRef(false);
-  // Le tableau de dépendances vide est normal ici car on veut charger les données une seule fois au montage du composant
+  // Reload when query params change (e.g., clicking a domain link updates ?domain=...)
   useEffect(() => {
-    if (didMount.current) return;
-    didMount.current = true;
-    setLoading(true); // uniquement ici
-    loadData().finally(() => {
-      setLoading(false); // uniquement ici aussi
-    });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    let mounted = true;
+    const run = async () => {
+      if (!mounted) return;
+      setLoading(true);
+      try {
+        await loadData();
+      } finally {
+        if (mounted) setLoading(false);
+      }
+    };
+
+    run();
+
+    return () => {
+      mounted = false;
+    };
+    // re-run when search params change
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams.toString()]);
+
+  // animation handled by useAutoAnimate hook
 
   if (loading) {
     return (
@@ -555,165 +626,26 @@ export default function EmailRedirectionsAdmin() {
             <h2 id="domains-heading" className="sr-only">
               Redirections par domaine
             </h2>
-            <div className="space-y-6">
+              <div className="space-y-6">
+                {/* Progress counter */}
+                {totalDomains > 0 && (
+                  <div className="text-sm text-gray-600 mb-2">
+                    Chargement domaines : {loadedDomains} / {totalDomains}
+                  </div>
+                )}
               {domainGroups.map((domainGroup, domainIndex) => (
-                <article key={domainGroup.domain} aria-labelledby={`domain-${domainIndex}-heading`}>
-                  <Card className="border-gray-200 shadow-none bg-white">
-                    <CardHeader className="bg-blue-50 border-b border-gray-200">
-                      <CardTitle id={`domain-${domainIndex}-heading`} className="text-xl text-blue-900">
-                        <Link href={`?domain=${domainGroup.domain}`}>{domainGroup.domain}</Link>
-                      </CardTitle>
-                      <CardDescription>
-                        {domainGroup.fromGroups.length} email{domainGroup.fromGroups.length !== 1 ? "s" : ""} source
-                        {domainGroup.fromGroups.length !== 1 ? "s" : ""} configuré
-                        {domainGroup.fromGroups.length !== 1 ? "s" : ""}
-                      </CardDescription>
-                    </CardHeader>
-                    <CardContent className="p-0">
-                      {domainGroup.fromGroups.length === 0 ? (
-                        <div className="text-center py-8 text-gray-500">
-                          Aucune redirection configurée pour ce domaine
-                        </div>
-                      ) : (
-                        <div className="divide-y divide-gray-200">
-                          {domainGroup.fromGroups.map((fromGroup, fromIndex) => (
-                            <section
-                              key={fromGroup.from}
-                              className="p-6"
-                              aria-labelledby={`from-${domainIndex}-${fromIndex}-heading`}
-                            >
-                              <div className="flex items-center justify-between mb-4">
-                                <div>
-                                  <h3
-                                    id={`from-${domainIndex}-${fromIndex}-heading`}
-                                    className="font-medium text-gray-900 font-mono text-lg"
-                                  >
-                                    {fromGroup.from}
-                                  </h3>
-                                  <p className="text-sm text-gray-500">
-                                    Redirige vers {fromGroup.redirections.length} destination
-                                    {fromGroup.redirections.length !== 1 ? "s" : ""}
-                                  </p>
-                                </div>
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  onClick={() => setAddingToFrom(fromGroup.from)}
-                                  className="border-blue-300 text-blue-600 hover:bg-blue-100 hover:border-blue-400 bg-white disabled:bg-gray-100 disabled:text-gray-400 disabled:border-gray-300 focus-ring"
-                                  disabled={isPending}
-                                  aria-label={`Ajouter une destination pour ${fromGroup.from}`}
-                                >
-                                  <Plus className="h-4 w-4 mr-1" aria-hidden="true" />
-                                  Ajouter Destination
-                                </Button>
-                              </div>
-
-                              {/* Add to existing form */}
-                              {addingToFrom === fromGroup.from && (
-                                <div className="mb-4 p-4 bg-blue-50 rounded-lg border border-blue-200">
-                                  <form
-                                    onSubmit={addForm.handleSubmit((data) => handleAddToExisting(fromGroup.from, data))}
-                                    noValidate
-                                  >
-                                    <fieldset disabled={isPending}>
-                                      <legend className="sr-only">
-                                        Ajouter des destinations pour {fromGroup.from}
-                                      </legend>
-                                      <div className="flex gap-3">
-                                        <div className="flex-1">
-                                          <Label htmlFor={`add-to-${fromGroup.from}`} className="sr-only">
-                                            Nouvelles adresses de destination pour {fromGroup.from}
-                                          </Label>
-                                          <Input
-                                            id={`add-to-${fromGroup.from}`}
-                                            placeholder="Ajouter des emails (virgule, point-virgule ou retour à la ligne)"
-                                            {...addForm.register("toList")}
-                                            className={`bg-white text-gray-900 placeholder-gray-500 border-gray-300 focus-ring ${
-                                              addForm.formState.errors.toList ? "border-red-500 focus-ring-red" : ""
-                                            }`}
-                                            disabled={isPending}
-                                            aria-invalid={!!addForm.formState.errors.toList}
-                                            aria-describedby={
-                                              addForm.formState.errors.toList
-                                                ? `add-to-error-${fromGroup.from}`
-                                                : undefined
-                                            }
-                                          />
-                                          {addForm.formState.errors.toList && (
-                                            <p
-                                              id={`add-to-error-${fromGroup.from}`}
-                                              className="mt-1 text-sm text-red-600"
-                                              role="alert"
-                                            >
-                                              {addForm.formState.errors.toList.message}
-                                            </p>
-                                          )}
-                                        </div>
-                                        <Button
-                                          type="submit"
-                                          className="bg-blue-600 hover:bg-blue-700 text-white border-0 disabled:bg-gray-400 disabled:text-gray-200 focus-ring"
-                                          disabled={!addForm.formState.isValid || isPending}
-                                        >
-                                          {isPending ? (
-                                            <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                                          ) : (
-                                            "Ajouter"
-                                          )}
-                                        </Button>
-                                        <Button
-                                          type="button"
-                                          variant="outline"
-                                          onClick={() => {
-                                            setAddingToFrom(null);
-                                            addForm.reset();
-                                          }}
-                                          className="border-gray-300 bg-white text-gray-700 hover:bg-gray-100 hover:border-gray-400 disabled:bg-gray-100 disabled:text-gray-400 disabled:border-gray-300 focus-ring-gray"
-                                          disabled={isPending}
-                                        >
-                                          Annuler
-                                        </Button>
-                                      </div>
-                                    </fieldset>
-                                  </form>
-                                </div>
-                              )}
-
-                              {/* Destination tags */}
-                              <div
-                                className="flex flex-wrap gap-2"
-                                role="list"
-                                aria-label={`Destinations pour ${fromGroup.from}`}
-                              >
-                                {fromGroup.redirections.map((redirection) => (
-                                  <div key={`${redirection.from}-${redirection.to}-${redirection.id}`} role="listitem">
-                                    <Badge
-                                      variant="secondary"
-                                      className={`bg-gray-100 text-gray-800 border border-gray-300 px-3 py-1 text-sm font-mono flex items-center gap-2 hover:bg-gray-200 hover:border-gray-400 transition-colors ${
-                                        redirection.id.startsWith("temp-") ? "opacity-60" : ""
-                                      }`}
-                                    >
-                                      <span>{redirection.to}</span>
-                                      <button
-                                        onClick={() =>
-                                          handleDeleteRedirection(redirection.id, redirection.from, redirection.to)
-                                        }
-                                        className="text-red-500 hover:text-red-700 ml-1 focus-ring-red bg-transparent disabled:opacity-50 transition-colors rounded"
-                                        disabled={isPending}
-                                        aria-label={`Supprimer la redirection vers ${redirection.to}`}
-                                      >
-                                        <X className="h-3 w-3" aria-hidden="true" />
-                                      </button>
-                                    </Badge>
-                                  </div>
-                                ))}
-                              </div>
-                            </section>
-                          ))}
-                        </div>
-                      )}
-                    </CardContent>
-                  </Card>
-                </article>
+                <div key={`${domainGroup.domain}-${domainGroup.loading ? "loading" : "ready"}`}>
+                  <DomainCard
+                    domainGroup={domainGroup}
+                    domainIndex={domainIndex}
+                    isPending={isPending}
+                    addingToFrom={addingToFrom}
+                    setAddingToFrom={setAddingToFrom}
+                    addForm={addForm}
+                    handleAddToExisting={handleAddToExisting}
+                    handleDeleteRedirection={handleDeleteRedirection}
+                  />
+                </div>
               ))}
             </div>
 

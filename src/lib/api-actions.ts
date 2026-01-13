@@ -10,6 +10,7 @@ import type {
 import { isOvhError, ovhClient } from './ovh';
 import { cookies } from 'next/headers';
 import { APP_DOMAIN, COOKIE_MAX_AGE, COOKIE_NAME, IS_PRODUCTION } from './config';
+import { createSignedCookieValue, verifyPassword } from './auth';
 
 /**
  * Fetch all available domains
@@ -91,25 +92,29 @@ export async function createRedirectionsAction(
   const domain = request.from.split("@")[1];
 
   try {
-    const newRedirections: Redirection[] = request.toEmails.map((to, index) => ({
-      id: `${Date.now()}-${index}`,
-      from: request.from,
-      to,
-    }));
+    // Call OVH API and collect returned IDs for each created redirection
+    const createdRedirections: Redirection[] = await Promise.all(
+      request.toEmails.map(async (to, index) => {
+        const returned = await ovhClient.requestPromised("POST", `/email/domain/${domain}/redirection`, {
+          from: request.from,
+          to,
+          localCopy: false,
+        });
 
-    await Promise.all(
-      newRedirections.map((redirection) =>
-        ovhClient.requestPromised("POST", `/email/domain/${domain}/redirection`, {
-          from: redirection.from,
-          to: redirection.to,
-          localCopy: false, // Assuming local copy is not needed
-        })
-      )
+        // OVH may return the newly created redirection id (string or number)
+        const id = typeof returned === "string" || typeof returned === "number" ? String(returned) : `${Date.now()}-${index}`;
+
+        return {
+          id,
+          from: request.from,
+          to,
+        };
+      }),
     );
-    
+
     return {
       success: true,
-      data: newRedirections,
+      data: createdRedirections,
     };
   } catch (error: unknown) {
     console.error(`Error creating redirections for ${request.from}:`, error);
@@ -152,26 +157,24 @@ export async function login(password: string): Promise<ApiResponse<void>> {
 
   console.log("password", password, process.env.BASIC_AUTH_PASS);
 
-  // Simulate authentication logic
-  if (password === process.env.BASIC_AUTH_PASS) {
-    const _cookies = await cookies();
-    _cookies.set({
-      name: COOKIE_NAME,
-      value: '1',
-      maxAge: COOKIE_MAX_AGE,
-      httpOnly: true,
-      secure: IS_PRODUCTION,
-      path: '/',
-      sameSite: 'lax',
-      domain: IS_PRODUCTION ? APP_DOMAIN : undefined, // Remplacez par votre domaine de production
-    });
-    return {
-      success: true,
-    };
-  } else {
-    return {
-      success: false,
-      error: "Invalid password",
-    };
+  // Verify password (supports hashed env var)
+  const ok = await verifyPassword(password);
+  if (!ok) {
+    return { success: false, error: 'Invalid password' };
   }
+
+  const cookieValue = await createSignedCookieValue(COOKIE_MAX_AGE);
+  const _cookies = await cookies();
+  _cookies.set({
+    name: COOKIE_NAME,
+    value: cookieValue,
+    maxAge: COOKIE_MAX_AGE,
+    httpOnly: true,
+    secure: IS_PRODUCTION,
+    path: '/',
+    sameSite: 'lax',
+    domain: IS_PRODUCTION ? APP_DOMAIN : undefined,
+  });
+
+  return { success: true };
 }

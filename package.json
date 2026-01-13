@@ -4,11 +4,13 @@
   "private": true,
   "scripts": {
     "dev": "next dev --turbopack",
+    "make-hash": "tsx scripts/make_hash.ts",
     "build": "next build --turbopack",
     "start": "next start",
     "lint": "next lint"
   },
   "dependencies": {
+    "@formkit/auto-animate": "^0.9.0",
     "@hookform/resolvers": "^5.1.1",
     "@ovhcloud/node-ovh": "^3.0.0",
     "@radix-ui/react-label": "^2.1.7",
@@ -36,6 +38,7 @@
     "eslint-config-next": "15.3.4",
     "postcss": "^8.5.6",
     "tailwindcss": "^4.1.11",
+    "tsx": "^4.21.0",
     "tw-animate-css": "^1.3.4",
     "typescript": "^5"
   }
