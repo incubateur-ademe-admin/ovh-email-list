@@ -85,6 +85,21 @@ export default function EmailRedirectionsAdmin() {
   const [loading, setLoading] = useState(true);
   const [isPending, startTransition] = useTransition();
   const { toast } = useToast();
+  // Operation queue state
+  type OpStatus = "queued" | "running" | "done" | "error" | "cancelled";
+  type Operation = {
+    opId: string;
+    type: "delete";
+    id: string; // redirection id
+    from: string;
+    to: string;
+    domain: string;
+    status: OpStatus;
+    error?: string;
+  };
+  const [opsQueue, setOpsQueue] = useState<Operation[]>([]);
+  const concurrency = 3;
+  const activeCount = useRef(0);
 
   const searchParams = useSearchParams();
   const initialDomain = searchParams.get("domain") || "";
@@ -135,7 +150,6 @@ export default function EmailRedirectionsAdmin() {
   };
 
   const loadData = async () => {
-    console.log("loadData called");
     announceToScreenReader("Chargement des domaines et redirections en cours...");
 
     try {
@@ -176,9 +190,9 @@ export default function EmailRedirectionsAdmin() {
             const idx = i++;
             try {
               results[idx] = await fn(items[idx], idx);
-            } catch (e) {
-              results[idx] = e as unknown as U;
-            }
+            } catch (e: unknown) {
+                  results[idx] = e as U;
+                }
           }
         });
         await Promise.all(workers);
@@ -224,7 +238,7 @@ export default function EmailRedirectionsAdmin() {
       });
 
       announceToScreenReader(`Chargement terminé. ${fetchedDomains.length} domaines chargés.`);
-    } catch (error) {
+    } catch (error: unknown) {
       console.error("Failed to load data:", error);
       const errorMessage = "Échec du chargement des données";
       toast({
@@ -236,8 +250,95 @@ export default function EmailRedirectionsAdmin() {
     }
   };
 
+  // Enqueue delete-all for a domain: flatten all redirections and enqueue delete ops
+  const enqueueDeleteAll = (domain: string) => {
+    const dg = domainGroups.find((d) => d.domain === domain);
+    if (!dg) return;
+
+    const ops: Operation[] = [];
+    for (const fg of dg.fromGroups) {
+      for (const r of fg.redirections) {
+        ops.push({ opId: `op-${crypto.randomUUID()}`, type: "delete", id: r.id, from: r.from, to: r.to, domain, status: "queued" });
+      }
+    }
+
+    if (ops.length === 0) return;
+
+    // Optimistic removal from UI
+    setDomainGroups((prev) => prev.map((d) => (d.domain === domain ? { ...d, fromGroups: [] } : d)));
+
+    setOpsQueue((prev) => [...prev, ...ops]);
+    toast({ title: `Enqueued ${ops.length} suppressions`, description: `Suppression de ${ops.length} alias pour ${domain}` });
+  };
+
+  const cancelOperation = (opId: string) => {
+    setOpsQueue((prev) => {
+      const exists = prev.find((p) => p.opId === opId && p.status === "queued");
+      if (!exists) return prev;
+      toast({ title: "Annulé", description: `Suppression annulée: ${exists.from} → ${exists.to}` });
+      return prev.filter((p) => p.opId !== opId);
+    });
+  };
+
+  // Worker effect: process queue with concurrency limit
+  useEffect(() => {
+    let mounted = true;
+    const runNext = async () => {
+      if (!mounted) return;
+      if (activeCount.current >= concurrency) return;
+      const next = opsQueue.find((o) => o.status === "queued");
+      if (!next) return;
+
+      // mark running
+      setOpsQueue((prev) => prev.map((o) => (o.opId === next.opId ? { ...o, status: "running" } : o)));
+      activeCount.current += 1;
+
+      try {
+        const res = await deleteRedirectionAction({ id: next.id, from: next.from });
+        if (!res.success) throw new Error(res.error || "delete failed");
+
+        setOpsQueue((prev) => prev.map((o) => (o.opId === next.opId ? { ...o, status: "done" } : o)));
+        toast({ title: "Supprimé", description: `${next.from} → ${next.to}` });
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        setOpsQueue((prev) => prev.map((o) => (o.opId === next.opId ? { ...o, status: "error", error: msg } : o)));
+        toast({ title: "Erreur", description: `Échec suppression ${next.from} → ${next.to}`, variant: "destructive" });
+        // re-fetch domain to reconcile
+        try {
+          const resp = await fetchRedirectionsByDomainAction(next.domain);
+          if (resp.success && resp.data) {
+            const redirs = resp.data.redirections || [];
+            const grouped: GroupedByFrom[] = redirs.reduce((acc: GroupedByFrom[], r) => {
+              const g = acc.find((gg) => gg.from === r.from);
+              if (g) g.redirections.push(r);
+              else acc.push({ from: r.from, redirections: [r] });
+              return acc;
+            }, []);
+            setDomainGroups((prev) => prev.map((d) => (d.domain === next.domain ? { domain: d.domain, fromGroups: grouped } : d)));
+          }
+        } catch (e: unknown) {
+          console.error("Failed to re-fetch domain after delete error", e);
+        }
+      } finally {
+        activeCount.current -= 1;
+        // remove finished ops (done or cancelled) from list after short delay
+        setOpsQueue((prev) => prev.filter((o) => o.status === "queued" || o.status === "running"));
+      }
+    };
+
+    // kick off available workers
+    const interval = setInterval(() => {
+      runNext();
+    }, 200);
+
+    return () => {
+      mounted = false;
+      clearInterval(interval);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [opsQueue]);
+
   const handleCreateRedirection = async (data: CreateRedirectionForm) => {
-    console.log("handleCreateRedirection called");
     const toEmails = parseEmailList(data.toList);
 
     // Optimistic update
@@ -317,7 +418,7 @@ export default function EmailRedirectionsAdmin() {
         const successMessage = `${toEmails.length} redirection${toEmails.length !== 1 ? "s créées" : " créée"} avec succès`;
         toast({ title: "Succès", description: successMessage });
         announceToScreenReader(successMessage);
-      } catch (error) {
+      } catch (error: unknown) {
         console.error("Failed to create redirections:", error);
         const errorMessage = "Échec de la création des redirections";
         toast({
@@ -398,7 +499,7 @@ export default function EmailRedirectionsAdmin() {
         const successMessage = `${toEmails.length} destination${toEmails.length !== 1 ? "s ajoutées" : " ajoutée"} avec succès`;
         toast({ title: "Succès", description: successMessage });
         announceToScreenReader(successMessage);
-      } catch (error) {
+      } catch (error: unknown) {
         console.error("Failed to add redirections:", error);
         const errorMessage = "Échec de l'ajout des redirections";
         toast({
@@ -452,7 +553,7 @@ export default function EmailRedirectionsAdmin() {
           description: successMessage,
         });
         announceToScreenReader(successMessage);
-      } catch (error) {
+      } catch (error: unknown) {
         console.error("Failed to delete redirection:", error);
         const errorMessage = "Échec de la suppression de la redirection";
         toast({
@@ -621,6 +722,35 @@ export default function EmailRedirectionsAdmin() {
             </Card>
           </section>
 
+          {/* Operations Queue Panel */}
+          {opsQueue.length > 0 && (
+            <section className="mt-6">
+              <Card className="border-gray-200 shadow-none bg-white">
+                <CardHeader className="bg-gray-50 border-b border-gray-200">
+                  <CardTitle className="text-sm">File d'opérations ({opsQueue.length})</CardTitle>
+                  <CardDescription>Actions en attente / en cours</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="space-y-2">
+                    {opsQueue.map((op) => (
+                      <div key={op.opId} className="flex items-center justify-between p-2 border rounded">
+                        <div className="text-sm">
+                          <strong>{op.from}</strong> → <span className="font-mono">{op.to}</span>
+                          <div className="text-xs text-gray-500">{op.status}</div>
+                        </div>
+                        <div>
+                          {op.status === 'queued' && (
+                            <Button size="sm" variant="outline" onClick={() => cancelOperation(op.opId)}>Annuler</Button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
+            </section>
+          )}
+
           {/* Domain Groups */}
           <section aria-labelledby="domains-heading" className="mt-8">
             <h2 id="domains-heading" className="sr-only">
@@ -644,6 +774,8 @@ export default function EmailRedirectionsAdmin() {
                     addForm={addForm}
                     handleAddToExisting={handleAddToExisting}
                     handleDeleteRedirection={handleDeleteRedirection}
+                    onDeleteAll={enqueueDeleteAll}
+                    busy={opsQueue.some((o) => o.domain === domainGroup.domain && (o.status === 'queued' || o.status === 'running'))}
                   />
                 </div>
               ))}

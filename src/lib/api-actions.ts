@@ -12,18 +12,60 @@ import { cookies } from 'next/headers';
 import { APP_DOMAIN, COOKIE_MAX_AGE, COOKIE_NAME, IS_PRODUCTION } from './config';
 import { createSignedCookieValue, verifyPassword } from './auth';
 
+// Simple request wrapper with retries for transient server errors (5xx)
+async function requestWithRetries<T>(method: string, path: string, body?: unknown, maxAttempts = 4, baseDelay = 300) {
+  let attempt = 0;
+  while (true) {
+    try {
+      // OVH client may throw or return errors; let caller handle non-2xx content
+      // For POST/DELETE we still retry conservatively but be aware of non-idempotence.
+      const res = await ovhClient.requestPromised(method, path, body);
+      return res as T;
+    } catch (err: unknown) {
+      attempt += 1;
+        const isServerError = (e: unknown): boolean => {
+          if (!e || typeof e !== 'object') return false;
+          const maybe = e as Record<string, unknown>;
+          if (typeof maybe.error === 'number') {
+            const code = maybe.error as number;
+            return code >= 500 && code < 600;
+          }
+          return false;
+        };
+
+      // If error looks like an OVH 5xx, we can retry
+      if (isServerError(err) && attempt < maxAttempts) {
+        const jitter = Math.random() * 100;
+        const delay = baseDelay * Math.pow(2, attempt - 1) + jitter;
+        console.warn(`OVH server error on ${method} ${path}, attempt ${attempt}/${maxAttempts}, retrying in ${Math.round(delay)}ms`, err);
+        await new Promise((r) => setTimeout(r, delay));
+        continue;
+      }
+
+      // For unexpected rejections where err is not an Error, normalize and rethrow
+      if (err && typeof err === 'object' && !(err instanceof Error)) {
+        throw new Error(JSON.stringify(err));
+      }
+
+      throw err;
+    }
+  }
+}
+
 /**
  * Fetch all available domains
  */
 export async function fetchDomainsAction(initialDomain?: string): Promise<ApiResponse<string[]>> {
   try {
-    const data = await ovhClient.requestPromised("GET", `/email/domain${initialDomain ? `/${encodeURIComponent(initialDomain)}` : ''}`);
+    const path = `/email/domain${initialDomain ? `/${encodeURIComponent(initialDomain)}` : ''}`;
+    const data = await requestWithRetries<Record<string, unknown> | string[] | { domain: string }>("GET", path);
 
+    const domains: string[] = Array.isArray(data) ? (data as string[]) : [((data as { domain?: unknown }).domain as string) || String(data)];
     return {
       success: true,
-      data: Array.isArray(data) ? data : [data.domain],
+      data: domains,
     };
-  } catch (error) {
+  } catch (error: unknown) {
     if (isOvhError(error)) {
       if (error.error === 404) {
         return {
@@ -47,11 +89,11 @@ export async function fetchDomainsAction(initialDomain?: string): Promise<ApiRes
 export async function fetchRedirectionsByDomainAction(
   domain: string,
 ): Promise<ApiResponse<DomainRedirectionsResponse>> {
-
   try {
-    const redirectionIds: string[] = await ovhClient.requestPromised("GET", `/email/domain/${domain}/redirection`);
+    // first fetch the list of redirection ids with retries for transient errors
+    const redirectionIds: string[] = await requestWithRetries<string[]>("GET", `/email/domain/${domain}/redirection`);
 
-    if (redirectionIds.length === 0) {
+    if (!Array.isArray(redirectionIds) || redirectionIds.length === 0) {
       return {
         success: true,
         data: {
@@ -61,10 +103,18 @@ export async function fetchRedirectionsByDomainAction(
       };
     }
 
-    const redirections: Redirection[] = await Promise.all(
-      redirectionIds.map(
-        async (id) => ovhClient.requestPromised("GET", `/email/domain/${domain}/redirection/${id}`)
-      )
+    // Fetch individual redirections in parallel, but tolerate occasional failures per-id
+    const redirections: Redirection[] = [];
+    await Promise.all(
+      redirectionIds.map(async (id) => {
+        try {
+          const r = await requestWithRetries<Redirection>("GET", `/email/domain/${domain}/redirection/${id}`);
+          if (r) redirections.push(r);
+        } catch (e: unknown) {
+          // Log and skip this id — keep other successful ones
+          console.warn(`Failed to fetch redirection ${id} for ${domain}:`, e);
+        }
+      }),
     );
 
     return {
@@ -95,11 +145,11 @@ export async function createRedirectionsAction(
     // Call OVH API and collect returned IDs for each created redirection
     const createdRedirections: Redirection[] = await Promise.all(
       request.toEmails.map(async (to, index) => {
-        const returned = await ovhClient.requestPromised("POST", `/email/domain/${domain}/redirection`, {
+        const returned = await requestWithRetries<string | number>("POST", `/email/domain/${domain}/redirection`, {
           from: request.from,
           to,
           localCopy: false,
-        });
+        }, 2);
 
         // OVH may return the newly created redirection id (string or number)
         const id = typeof returned === "string" || typeof returned === "number" ? String(returned) : `${Date.now()}-${index}`;
@@ -133,7 +183,7 @@ export async function deleteRedirectionAction(request: DeleteRedirectionRequest)
   const domain = request.from.split("@")[1];
 
   try {
-    await ovhClient.requestPromised("DELETE", `/email/domain/${domain}/redirection/${request.id}`);
+    await requestWithRetries<void>("DELETE", `/email/domain/${domain}/redirection/${request.id}`, undefined, 2);
 
     return {
       success: true,
@@ -154,8 +204,6 @@ export async function login(password: string): Promise<ApiResponse<void>> {
       error: "Password is required",
     };
   }
-
-  console.log("password", password, process.env.BASIC_AUTH_PASS);
 
   // Verify password (supports hashed env var)
   const ok = await verifyPassword(password);

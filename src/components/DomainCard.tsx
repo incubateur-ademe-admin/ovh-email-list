@@ -1,11 +1,11 @@
 "use client";
-
+import { useState } from "react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Plus, X, Loader2 } from "lucide-react";
+import { Plus, X, Loader2, ChevronDown, Trash2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import type { Redirection } from "@/types/api";
 import type { UseFormReturn } from "react-hook-form";
@@ -31,6 +31,8 @@ type Props = {
   addForm: UseFormReturn<AddToExistingForm>;
   handleAddToExisting: (fromEmail: string, data: AddToExistingForm) => void;
   handleDeleteRedirection: (id: string, fromEmail: string, toEmail: string) => void;
+  onDeleteAll?: (domain: string) => void;
+  busy?: boolean;
 };
 
 export default function DomainCard({
@@ -42,20 +44,71 @@ export default function DomainCard({
   addForm,
   handleAddToExisting,
   handleDeleteRedirection,
+  onDeleteAll,
+  busy,
 }: Props) {
+  const [open, setOpen] = useState(false); // collapsed by default
+  const contentId = `domain-${domainIndex}-content`;
+  const totalRedirections = domainGroup.fromGroups.reduce((sum, fg) => sum + (fg.redirections?.length || 0), 0);
   return (
     <article aria-labelledby={`domain-${domainIndex}-heading`} aria-busy={domainGroup.loading}>
       <Card className={`border-gray-200 shadow-none bg-white ${domainGroup.loading ? "opacity-60 pointer-events-none" : ""}`}>
         <CardHeader className="bg-blue-50 border-b border-gray-200">
-          <CardTitle id={`domain-${domainIndex}-heading`} className="text-xl text-blue-900">
-            <Link href={`?domain=${domainGroup.domain}`}>{domainGroup.domain}</Link>
-          </CardTitle>
-          <CardDescription>
-            {domainGroup.fromGroups.length} email{domainGroup.fromGroups.length !== 1 ? "s" : ""} source
-            {domainGroup.fromGroups.length !== 1 ? "s" : ""} configuré{domainGroup.fromGroups.length !== 1 ? "s" : ""}
-          </CardDescription>
+          <div className="flex items-center justify-between w-full">
+            <div className="flex items-center gap-3">
+              <button
+                aria-expanded={open}
+                aria-controls={contentId}
+                onClick={() => setOpen(!open)}
+                className="p-1 rounded focus-ring"
+                aria-label={open ? `Réduire ${domainGroup.domain}` : `Déplier ${domainGroup.domain}`}
+              >
+                <ChevronDown className={`h-5 w-5 text-blue-700 transition-transform ${open ? "rotate-180" : ""}`} aria-hidden="true" />
+              </button>
+              <div>
+                <CardTitle id={`domain-${domainIndex}-heading`} className="text-xl text-blue-900 flex items-center gap-2">
+                  <Link href={`?domain=${domainGroup.domain}`}>{domainGroup.domain}</Link>
+                  {/** small spinner when operations are queued/running for this domain */}
+                  {busy && <Loader2 className="h-4 w-4 text-blue-600 animate-spin" aria-hidden="true" />}
+                </CardTitle>
+                <CardDescription>
+                  {domainGroup.loading ? (
+                    <span className="flex items-center gap-2 text-sm text-gray-600">
+                      <Loader2 className="h-4 w-4 animate-spin text-gray-600" aria-hidden="true" /> Chargement des redirections...
+                    </span>
+                  ) : (
+                    <>
+                      {domainGroup.fromGroups.length} email{domainGroup.fromGroups.length !== 1 ? "s" : ""} source
+                      {domainGroup.fromGroups.length !== 1 ? "s" : ""} configuré{domainGroup.fromGroups.length !== 1 ? "s" : ""}
+                    </>
+                  )}
+                </CardDescription>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              {totalRedirections > 0 && (
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  onClick={() => {
+                    if (!onDeleteAll) return;
+                    if (confirm(`Supprimer toutes les redirections pour ${domainGroup.domain} ?`)) {
+                      onDeleteAll(domainGroup.domain);
+                    }
+                  }}
+                  className="bg-red-600 hover:bg-red-700 text-white"
+                  disabled={isPending || domainGroup.loading}
+                  aria-label={`Supprimer toutes les redirections pour ${domainGroup.domain}`}
+                >
+                  <Trash2 className="h-4 w-4" aria-hidden="true" />
+                </Button>
+              )}
+            </div>
+          </div>
         </CardHeader>
-        <CardContent className="p-0">
+
+        {open && (
+          <CardContent id={contentId} className="p-0">
           {domainGroup.loading ? (
             <div className="text-center py-8 text-gray-500">
               <Loader2 className="h-6 w-6 animate-spin mx-auto mb-2 text-gray-600" aria-hidden="true" />
@@ -145,6 +198,7 @@ export default function DomainCard({
             </div>
           )}
         </CardContent>
+        )}
       </Card>
     </article>
   );

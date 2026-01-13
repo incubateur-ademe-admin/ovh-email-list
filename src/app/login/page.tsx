@@ -43,7 +43,7 @@ export default function LoginPage() {
           toast.error(result.error || "Échec de la connexion");
           setPassword("");
         }
-      } catch (error) {
+      } catch (error: unknown) {
         console.error("Login error:", error);
         toast.error("Erreur de connexion");
         setPassword("");
