@@ -37,7 +37,7 @@ async function verifySignedCookieValueEdge(value: string) {
 }
 
 
-export async function middleware(req: NextRequest) {
+export async function proxy(req: NextRequest) {
   // experimental: support for Chrome DevTools
   if (req.url.includes("/.well-known/appspecific/com.chrome.devtools.json") && !IS_PRODUCTION) {
     console.log("Serving Chrome DevTools configuration");
