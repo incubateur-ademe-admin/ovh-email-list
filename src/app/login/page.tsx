@@ -4,6 +4,7 @@ import type React from "react";
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import { Eye, EyeOff, Lock } from "lucide-react";
 import { toast } from "sonner";
 
@@ -19,6 +20,8 @@ export default function LoginPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [isPending, startTransition] = useTransition();
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const returnTo = searchParams.get("returnTo") || "/";
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -34,13 +37,13 @@ export default function LoginPage() {
 
         if (result.success) {
           toast.success("Connexion réussie !");
-          // Redirect to main page
-          router.push("/");
+          // Redirect to requested page (preserve ?domain= when present)
+          router.push(returnTo || "/");
         } else {
           toast.error(result.error || "Échec de la connexion");
           setPassword("");
         }
-      } catch (error) {
+      } catch (error: unknown) {
         console.error("Login error:", error);
         toast.error("Erreur de connexion");
         setPassword("");
