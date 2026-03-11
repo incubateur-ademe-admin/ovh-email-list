@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
-import { APP_DOMAIN, COOKIE_NAME, IS_PRODUCTION, COOKIE_SECRET } from './lib/config';
+import { APP_DOMAIN, COOKIE_MAX_AGE, COOKIE_NAME, IS_PRODUCTION, COOKIE_SECRET } from './lib/config';
 
 // Edge runtime safe verification using Web Crypto
 async function verifySignedCookieValueEdge(value: string) {
@@ -37,6 +37,16 @@ async function verifySignedCookieValueEdge(value: string) {
 }
 
 
+async function createSignedCookieValueEdge(maxAgeSeconds: number): Promise<string> {
+  const payload = JSON.stringify({ v: 1, exp: Date.now() + maxAgeSeconds * 1000 });
+  const b64 = btoa(payload);
+  const keyData = new TextEncoder().encode(COOKIE_SECRET);
+  const cryptoKey = await crypto.subtle.importKey('raw', keyData, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const sigBuffer = await crypto.subtle.sign('HMAC', cryptoKey, new TextEncoder().encode(b64));
+  const sigHex = Array.from(new Uint8Array(sigBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
+  return `${b64}.${sigHex}`;
+}
+
 export async function proxy(req: NextRequest) {
   // experimental: support for Chrome DevTools
   if (req.url.includes("/.well-known/appspecific/com.chrome.devtools.json") && !IS_PRODUCTION) {
@@ -56,7 +66,21 @@ export async function proxy(req: NextRequest) {
 
   if (cookie?.value) {
     const { valid, expired } = await verifySignedCookieValueEdge(cookie.value);
-    if (valid) return NextResponse.next();
+    if (valid) {
+      const res = NextResponse.next();
+      const newValue = await createSignedCookieValueEdge(COOKIE_MAX_AGE);
+      res.cookies.set({
+        name: COOKIE_NAME,
+        value: newValue,
+        maxAge: COOKIE_MAX_AGE,
+        httpOnly: true,
+        secure: IS_PRODUCTION,
+        path: '/',
+        sameSite: 'lax',
+        domain: IS_PRODUCTION ? APP_DOMAIN : undefined,
+      });
+      return res;
+    }
     if (expired) {
       const returnTo = encodeURIComponent(req.nextUrl.pathname + req.nextUrl.search);
       return NextResponse.redirect(new URL(`/login?expired=1&returnTo=${returnTo}`, req.url));
